@@ -38,9 +38,17 @@ export async function GET(req) {
         ratingDiff: p.ratingDiff, homeAdvUsed: p.homeAdvUsed,
       }));
       const y = rows.map(([, p]) => (p.actual === "A" ? 1 : 0)); // 1 = home team won
-      const { model, trainAccuracy } = trainGBoost(X, y);
+      const { model, trainAccuracy, featureImportance } = trainGBoost(X, y);
       await redis.set("mlb-forest-model", model);
-      meta = { trainedOn: rows.length, trainAccuracy, ready: true, features: FEATURE_NAMES.length, featureNames: FEATURE_NAMES, trainedAt: new Date().toISOString() };
+      // Each feature's share of total SSE-reduction across every split in
+      // every tree — how much the model is actually LEANING on it, not
+      // just whether it's present. Read alongside the backtest's held-out
+      // accuracy: a feature with high importance here but no accuracy lift
+      // there is a real candidate for overfitting/noise, not signal.
+      const importanceByFeature = Object.fromEntries(
+        FEATURE_NAMES.map((n, i) => [n, Math.round(featureImportance[i] * 1000) / 1000])
+      );
+      meta = { trainedOn: rows.length, trainAccuracy, ready: true, features: FEATURE_NAMES.length, featureNames: FEATURE_NAMES, importanceByFeature, trainedAt: new Date().toISOString() };
     }
 
     await redis.set("mlb-forest-meta", meta);
