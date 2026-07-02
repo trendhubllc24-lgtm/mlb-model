@@ -331,7 +331,7 @@ export default function MLBModel() {
   .title{font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:clamp(32px,8.5vw,54px);line-height:.92;letter-spacing:-.02em}
   .layout{display:grid;grid-template-columns:1fr 360px;gap:20px;align-items:start;margin-top:20px}
   .main{min-width:0}
-  .side{position:sticky;top:20px;min-width:0}
+  .side{position:static;min-width:0}
   .livesticky{position:sticky;top:20px;z-index:5}
   @media(max-width:980px){.layout{grid-template-columns:1fr}.side{position:static}.livesticky{position:relative;top:0}}
   .card{background:var(--surf);border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:20px}
