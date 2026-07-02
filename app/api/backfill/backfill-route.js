@@ -16,8 +16,18 @@ function addDays(yyyymmdd, n) {
 
 // Real MLB regular-season start dates — spring training is excluded on
 // purpose (exhibition results don't reflect real team strength).
-const SEASON_START = { "2025": "20250327", "2026": "20260327" };
-const SEASON_END = { "2025": "20251005", "2026": "20261231" }; // 2026 end will be reached naturally once "today" catches up
+// Real MLB Opening Day / season-end dates, verified — 2020 was the
+// COVID-shortened 60-game season (started late July); 2022 opened late due
+// to the lockout. A few days of buffer added on each end since checking an
+// extra empty day costs nothing (it just contributes zero games).
+const SEASON_START = {
+  "2020": "20200723", "2021": "20210401", "2022": "20220407",
+  "2023": "20230330", "2024": "20240328", "2025": "20250327", "2026": "20260326",
+};
+const SEASON_END = {
+  "2020": "20200930", "2021": "20211007", "2022": "20221009",
+  "2023": "20231005", "2024": "20241003", "2025": "20251002", "2026": "20261231",
+}; // 2026 end will be reached naturally once "today" catches up
 
 // Resumable, one-year-at-a-time backfill: predicts + immediately grades
 // every real (regular-season, finished) game in chronological day order,

@@ -168,7 +168,7 @@ export default function MLBModel() {
   const [openPick, setOpenPick] = useState(null);
   const [trackShown, setTrackShown] = useState(10);
 
-  // Random Forest's independent read on the currently selected matchup
+  // Gradient Boosting model's independent read on the currently selected matchup
   const [forestSignal, setForestSignal] = useState(null);
 
   const H = byName(teamH), A = byName(teamA);
@@ -644,11 +644,11 @@ export default function MLBModel() {
                 const agree = (fProbThisSide >= 0.5) === (R.p >= 0.5);
                 return (
                   <div className="evbox" style={{ borderColor: agree ? MINT + "40" : CORAL + "40" }}>
-                    <b>Random Forest</b> (trained on {forestSignal.trainedOn} historical games, {Math.round(forestSignal.trainAccuracy * 100)}% self-check accuracy) reads this side at <b>{p1(fProbThisSide)}</b> to win — {agree ? "agrees with the Poisson model's lean above." : "disagrees with the Poisson model's lean above, worth weighing both."}
+                    <b>Gradient Boosting</b> (trained on {forestSignal.trainedOn} historical games, {Math.round(forestSignal.trainAccuracy * 100)}% self-check accuracy) reads this side at <b>{p1(fProbThisSide)}</b> to win — {agree ? "agrees with the Poisson model's lean above." : "disagrees with the Poisson model's lean above, worth weighing both."}
                   </div>
                 );
               })() : (
-                <div className="note">Random Forest: {forestSignal ? `needs more graded games first (${forestSignal.trainedOn}/60 so far) — run the backfill to speed this up.` : "loading…"}</div>
+                <div className="note">Gradient Boosting: {forestSignal ? `needs more graded games first (${forestSignal.trainedOn}/80 so far) — run the backfill to speed this up.` : "loading…"}</div>
               )
             )}
           </div>
@@ -709,8 +709,8 @@ export default function MLBModel() {
               <div className="note" style={{ marginTop: 14, marginBottom: 4 }}>
                 "Correct" = the model's moneyline pick matched the final result. Every graded miss also nudges that team's rating for its next game.
                 {" "}{fm?.ready
-                  ? `Random Forest active — trained on ${fm.trainedOn} historical games, ${Math.round(fm.trainAccuracy * 100)}% self-check accuracy.`
-                  : `Random Forest: ${fm ? `${fm.trainedOn}/60 games graded so far, needs more before it activates.` : "not trained yet."}`}
+                  ? `Gradient Boosting active — trained on ${fm.trainedOn} historical games, ${Math.round(fm.trainAccuracy * 100)}% self-check accuracy.`
+                  : `Gradient Boosting: ${fm ? `${fm.trainedOn}/80 games graded so far, needs more before it activates.` : "not trained yet."}`}
               </div>
 
               <div className="subtabs" style={{ marginTop: 10 }}>
