@@ -2,8 +2,8 @@
 import { useState, useMemo, useEffect } from "react";
 
 /* ================================================================== */
-/*  TEAMS  (approximate power ratings, editable — same idea as the      */
-/*  World Cup model's Elo table, scaled for baseball)                   */
+/*  TEAMS  (fallback power ratings — overridden by the live, self-      */
+/*  adjusting Elo ratings from the snapshot once the backend is live)   */
 /* ================================================================== */
 const TEAMS = [
   ["Los Angeles Dodgers", "LAD", 1620], ["New York Yankees", "NYY", 1600],
@@ -61,15 +61,17 @@ const HITTERS = {
 };
 
 /* ================================================================== */
-/*  MODEL MATH  — Elo-style rating → expected runs → Poisson grid.      */
+/*  MODEL MATH  — Elo-style rating -> expected runs -> Poisson grid.    */
 /*  No Dixon-Coles low-score correction here (that was specifically a   */
 /*  soccer fix for 0-0/1-0 clustering); baseball doesn't need it.       */
+/*  Home-field is now per-team (homeAdvValue), sourced from ESPN's real */
+/*  home/road W-L splits when the backend is live — see sources.js.     */
 /* ================================================================== */
-const HOME_ADV = 25, MAXR = 12;
+const HOME_ADV_DEFAULT = 25, MAXR = 12;
 function pFactorial(n) { let f = 1; for (let i = 2; i <= n; i++) f *= i; return f; }
 function poisson(k, l) { return Math.exp(-l) * Math.pow(l, k) / pFactorial(k); }
-function deriveLambdas(rHome, rAway) {
-  const diff = rHome - rAway + HOME_ADV;
+function deriveLambdas(rHome, rAway, homeAdvValue) {
+  const diff = rHome - rAway + (homeAdvValue ?? HOME_ADV_DEFAULT);
   const sup = Math.max(-3, Math.min(3, diff / 140));
   const total = 8.6; // roughly MLB's combined runs/game league average
   return [Math.max(1.2, total / 2 + sup / 2), Math.max(1.2, total / 2 - sup / 2)];
@@ -112,9 +114,28 @@ const brace = (mu) => 1 - Math.exp(-mu) * (1 + mu);
 function impliedProb(str) { const v = parseFloat(str); if (!str || isNaN(v)) return null; return v >= 0 ? 100 / (v + 100) : -v / (-v + 100); }
 function fairAmerican(p) { if (p <= 0.001 || p >= 0.999) return "—"; return p > 0.5 ? "-" + Math.round(100 * p / (1 - p)) : "+" + Math.round(100 * (1 - p) / p); }
 
+// Fold a live score + innings-remaining into a base (pre-game) lambda pair
+// to get a live win probability. Used for both the selected matchup panel
+// and every row in the top "Live now" ticker.
+function liveProbFromScore(lH0, lA0, curH, curA, inningsPlayedRaw) {
+  const inningsPlayed = Math.min(9, Math.max(0, inningsPlayedRaw || 1));
+  const fracLeft = Math.max(0.03, (9 - inningsPlayed) / 9);
+  const rlH = Math.max(0.15, lH0 * fracLeft), rlA = Math.max(0.15, lA0 * fracLeft);
+  const rGrid = buildGrid(rlH, rlA);
+  let pH = 0, pA = 0;
+  for (let i = 0; i <= MAXR; i++) for (let j = 0; j <= MAXR; j++) {
+    const fi = curH + i, fj = curA + j;
+    if (fi > MAXR || fj > MAXR) continue;
+    const p = rGrid[i][j];
+    if (fi > fj) pH += p; else if (fi < fj) pA += p;
+  }
+  const t = pH + pA;
+  return t > 0 ? { pH: pH / t, pA: pA / t } : { pH: 0.5, pA: 0.5 };
+}
+
 /* fallback snapshot (used before the backend is deployed / reachable) */
 const SNAPSHOT = {
-  asOf: "today", winner: [], schedule: [],
+  asOf: "today", winner: [], scheduleDays: [], standings: [],
   note: "Deploy the backend for live ESPN + Polymarket + Kalshi pulls.",
 };
 
@@ -139,6 +160,12 @@ export default function MLBModel() {
   const [ttTeam, setTtTeam] = useState("H"); const [ttLine, setTtLine] = useState(4.5);
   const [kLine, setKLine] = useState(5.5); const [kSide, setKSide] = useState("over");
   const [player, setPlayer] = useState("");
+
+  // schedule pagination — start with 2 days, "show more" reveals 2 at a time
+  const [daysShown, setDaysShown] = useState(2);
+  // prediction tracker: hit/miss filter + expandable detail row
+  const [trackTab, setTrackTab] = useState("all");
+  const [openPick, setOpenPick] = useState(null);
 
   const H = byName(teamH), A = byName(teamA);
   const pickH = (n) => setTH(n);
@@ -181,13 +208,20 @@ export default function MLBModel() {
     return () => clearInterval(id);
   }, [liveGames.length]);
 
+  const snap = live || SNAPSHOT;
+  const liveRatings = live && live.ratings;
+  const liveHomeAdv = live && live.homeAdv;
+  const ratingOf = (name) => liveRatings?.[name] ?? byName(name).rating;
+  const homeAdvOf = (name) => liveHomeAdv?.[name] ?? HOME_ADV_DEFAULT;
+
   const M = useMemo(() => {
-    const [lH, lA] = deriveLambdas(H.rating, A.rating);
+    const rH = ratingOf(teamH), rA = ratingOf(teamA);
+    const [lH, lA] = deriveLambdas(rH, rA, homeAdvOf(teamH));
     const grid = buildGrid(lH, lA);
     const s = summarize(grid);
     return { lH, lA, grid, s };
     // eslint-disable-next-line
-  }, [teamH, teamA, nonce]);
+  }, [teamH, teamA, nonce, liveRatings, liveHomeAdv]);
   const { lH, lA, grid, s } = M;
 
   const refresh = () => {
@@ -199,8 +233,7 @@ export default function MLBModel() {
       .catch(() => setFeed("offline"));
   };
 
-  const snap = live || SNAPSHOT;
-  const schedule = (live && live.schedule) || [];
+  const scheduleDays = (live && live.scheduleDays) || [];
   const standings = (live && live.standings) || [];
 
   const liveMatch = liveGames.find((g) => (g.a === teamH && g.b === teamA) || (g.a === teamA && g.b === teamH));
@@ -239,7 +272,7 @@ export default function MLBModel() {
   ];
   const selPlayer = playersPool.find((p) => p.n === player) || playersPool[0];
 
-  const kLambda = 5.8 + (H.rating - 1500) / 300; // rough proxy, see note in UI
+  const kLambda = 5.8 + (ratingOf(teamH) - 1500) / 300; // rough proxy, see note in UI
 
   function resolveBet() {
     switch (bet) {
@@ -367,6 +400,19 @@ export default function MLBModel() {
   .livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:${CORAL};margin-right:6px;animation:dotBlink 1.1s ease-in-out infinite}
   .standrow{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-top:1px solid var(--line)}
   .standrow b{font-family:'Space Mono'}
+  .standmeta{font-family:'Space Mono';font-size:10.5px;color:var(--dim)}
+  .daygroup{margin-bottom:14px}
+  .dayhead{font-family:'Space Mono';font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin:14px 0 8px;font-weight:700}
+  .showmore{width:100%;background:var(--surf2);border:1px dashed var(--line);color:var(--dim);border-radius:10px;padding:10px;font-family:'Space Mono';font-size:12px;cursor:pointer;margin-top:6px}
+  .showmore:hover{border-color:var(--mint);color:var(--ink)}
+  .tickrow{padding:11px 10px;border:1px solid var(--line);border-radius:11px;margin-bottom:8px;cursor:pointer;background:var(--surf2)}
+  .tickrow:hover{border-color:var(--mint)}
+  .tickhead{display:flex;align-items:center;gap:10px}
+  .tickbar{display:flex;height:20px;border-radius:6px;overflow:hidden;margin-top:8px;border:1px solid var(--line)}
+  .tickbar span{display:flex;align-items:center;justify-content:center;font-family:'Space Mono';font-size:10px;font-weight:700;color:#08181c;transition:width .5s ease}
+  .pickrow{cursor:pointer}
+  .pickdetail{margin:-4px 0 8px;padding:12px;border-radius:0 0 11px 11px;border:1px solid var(--line);border-top:none;background:var(--surf);font-size:12px;font-family:'Space Mono';color:var(--dim);line-height:1.7}
+  .pickdetail b{color:var(--ink)}
   @media(max-width:560px){.scorers,.rf,.split{grid-template-columns:1fr}.cell{font-size:9px}.prow .nm{width:88px}}`;
 
   const scorerCol = (team, list, color, abbr) => (
@@ -393,25 +439,42 @@ export default function MLBModel() {
         <div className="layout">
         <div className="main">
 
-        {liveGames.length > 0 && (
-          <div className="card livesticky" style={{ borderColor: CORAL }}>
-            <div className="snaphead">
-              <h3 style={{ color: CORAL }}>● Live now</h3>
-              <span className="note" style={{ margin: 0 }}>synced every 10s · live prob. ticks every second</span>
-            </div>
-            {liveGames.map((g, k) => (
-              <div className="fxrow" key={k} onClick={() => loadFixture(g)} style={{ borderColor: CORAL + "55" }}>
-                <div className="when" style={{ color: CORAL, fontWeight: 700 }}>{g.clock || "LIVE"}</div>
-                <div className="match">
-                  {byName(g.a).abbr} {g.aScore} <span style={{ color: "var(--dim)" }}>–</span> {g.bScore} {byName(g.b).abbr}
-                  <div className="go">tap for live win prob →</div>
-                </div>
-                <div className="place">{g.city}<br />{g.stad}</div>
-              </div>
-            ))}
+        {/* ===== LIVE NOW — always visible; falls back to an explicit ===== */}
+        {/* "nothing live" message instead of just disappearing, with a     */}
+        {/* pulsing live win-probability bar per game.                     */}
+        <div className="card livesticky" style={{ borderColor: liveGames.length > 0 ? CORAL : "var(--line)" }}>
+          <div className="snaphead">
+            <h3 style={{ color: liveGames.length > 0 ? CORAL : "var(--dim)" }}>{liveGames.length > 0 ? "● Live now" : "○ Live now"}</h3>
+            {liveGames.length > 0 && <span className="note" style={{ margin: 0 }}>synced every 10s · live prob. ticks every second</span>}
           </div>
-        )}
+          {liveGames.length === 0 && (
+            <div className="empty" style={{ fontSize: 13.5, lineHeight: 1.65 }}>
+              No games live right now. Check back during game time — most first pitches are early evening ET.
+            </div>
+          )}
+          {liveGames.map((g, k) => {
+            const rH = ratingOf(g.a), rA = ratingOf(g.b);
+            const [lH0, lA0] = deriveLambdas(rH, rA, homeAdvOf(g.a));
+            const { pH, pA } = liveProbFromScore(lH0, lA0, g.aScore, g.bScore, g.inning || 1);
+            return (
+              <div className="tickrow" key={k} onClick={() => loadFixture(g)}>
+                <div className="tickhead">
+                  <span className="livedot" />
+                  <span style={{ fontFamily: "'Space Mono'", fontSize: 11, color: CORAL, fontWeight: 700, flexShrink: 0 }}>{g.clock || "LIVE"}</span>
+                  <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{byName(g.a).abbr} {g.aScore} <span style={{ color: "var(--dim)" }}>–</span> {g.bScore} {byName(g.b).abbr}</span>
+                  <span className="place">{g.city}</span>
+                </div>
+                <div className="tickbar">
+                  <span style={{ width: `${pH * 100}%`, background: MINT }}>{pH > 0.14 ? p1(pH) : ""}</span>
+                  <span style={{ width: `${pA * 100}%`, background: CORAL }}>{pA > 0.14 ? p1(pA) : ""}</span>
+                </div>
+                <div className="barlabels" style={{ marginTop: 4 }}><span>{byName(g.a).abbr} win prob.</span><span>{byName(g.b).abbr} win prob.</span></div>
+              </div>
+            );
+          })}
+        </div>
 
+        {/* ===== LIVE PREDICTION TRACKER — filterable, expandable ===== */}
         <div className="card">
           <h3 style={{ fontFamily: "'Space Mono'", fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: AMBER, marginBottom: 12 }}>Live prediction tracker</h3>
           {(() => {
@@ -421,21 +484,57 @@ export default function MLBModel() {
             }
             const acc = trk.accuracy;
             const accColor = acc >= 0.6 ? MINT : acc >= 0.45 ? AMBER : CORAL;
+            const recentColor = trk.recentAccuracy >= 0.6 ? MINT : trk.recentAccuracy >= 0.45 ? AMBER : CORAL;
+            const hits = trk.history.filter((p) => p.correct).length;
+            const misses = trk.history.filter((p) => !p.correct).length;
+            const filtered = trk.history.filter((p) => trackTab === "all" ? true : trackTab === "hit" ? p.correct : !p.correct);
+
             return (<>
               <div style={{ display: "flex", gap: 26, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
                 <div><div className="bigp" style={{ color: MINT, fontSize: 34 }}>{trk.correct}</div><div className="note" style={{ margin: 0 }}>correct</div></div>
                 <div><div className="bigp" style={{ color: CORAL, fontSize: 34 }}>{trk.incorrect}</div><div className="note" style={{ margin: 0 }}>incorrect</div></div>
                 <div><div className="bigp" style={{ color: accColor, fontSize: 34 }}>{Math.round(acc * 100)}%</div><div className="note" style={{ margin: 0 }}>hit rate · {trk.total} graded</div></div>
+                {trk.recentTotal >= 5 && (
+                  <div><div className="bigp" style={{ color: recentColor, fontSize: 34 }}>{Math.round(trk.recentAccuracy * 100)}%</div><div className="note" style={{ margin: 0 }}>last {trk.recentTotal} · recent form</div></div>
+                )}
               </div>
               <div className="riskbar" style={{ marginTop: 4 }}><div className="rf2" style={{ width: `${acc * 100}%`, background: accColor, opacity: 0.85 }} /></div>
-              <div className="note" style={{ marginTop: 14, marginBottom: 10 }}>"Correct" = the model's moneyline pick matched the final result. Most recent first.</div>
-              {trk.history.slice(0, 6).map((p, k) => (
-                <div className="fxrow" key={k} style={{ cursor: "default", borderColor: p.correct ? MINT + "55" : CORAL + "55" }}>
-                  <div className="when" style={{ color: p.correct ? MINT : CORAL, fontWeight: 700 }}>{p.correct ? "✓ hit" : "✗ miss"}</div>
-                  <div className="match">{byName(p.a).abbr} v {byName(p.b).abbr}<div className="go" style={{ color: "var(--dim)" }}>final {p.finalScore} · picked {p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</div></div>
-                  <div className="place">{new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
-                </div>
-              ))}
+              <div className="note" style={{ marginTop: 14, marginBottom: 4 }}>
+                "Correct" = the model's moneyline pick matched the final result. Every graded miss also nudges that team's rating for its next game — see "recent form" above vs. the all-time hit rate to gauge whether the model is adapting.
+              </div>
+
+              <div className="subtabs" style={{ marginTop: 10 }}>
+                {[["all", `All (${trk.history.length})`], ["hit", `Hits (${hits})`], ["miss", `Misses (${misses})`]].map(([v, label]) => (
+                  <button key={v} className={trackTab === v ? "on" : ""} onClick={() => { setTrackTab(v); setOpenPick(null); }}>{label}</button>
+                ))}
+              </div>
+              <div className="note" style={{ marginTop: 10, marginBottom: 10 }}>Tap a game to see the model's full pre-game read vs. what actually happened.</div>
+
+              {filtered.length === 0 && <div className="empty">Nothing in this filter yet.</div>}
+              {filtered.slice(0, 20).map((p, k) => {
+                const gid = `${p.a}|${p.b}|${p.date}`;
+                const isOpen = openPick === gid;
+                return (
+                  <div key={k}>
+                    <div
+                      className="fxrow pickrow"
+                      style={{ borderColor: p.correct ? MINT + "55" : CORAL + "55", borderRadius: isOpen ? "11px 11px 0 0" : "11px", marginBottom: isOpen ? 0 : 8 }}
+                      onClick={() => setOpenPick(isOpen ? null : gid)}
+                    >
+                      <div className="when" style={{ color: p.correct ? MINT : CORAL, fontWeight: 700 }}>{p.correct ? "✓ hit" : "✗ miss"}</div>
+                      <div className="match">{byName(p.a).abbr} v {byName(p.b).abbr}<div className="go" style={{ color: "var(--dim)" }}>final {p.finalScore} · picked {p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</div></div>
+                      <div className="place">{new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
+                    </div>
+                    {isOpen && (
+                      <div className="pickdetail">
+                        Pre-game read: <b>{byName(p.a).abbr} {p1(p.pA)}</b> to win · <b>{byName(p.b).abbr} {p1(p.pB)}</b> to win.<br />
+                        Picked <b>{p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</b> — actual winner was <b>{p.actual === "A" ? byName(p.a).abbr : byName(p.b).abbr}</b>, final score {p.finalScore}.<br />
+                        {p.correct ? "The model's favored side won this one." : "The model missed — both teams' ratings already shifted from this result, so this exact matchup would be read a little differently today."}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </>);
           })()}
         </div>
@@ -452,7 +551,7 @@ export default function MLBModel() {
             <span className="autotag">{H.abbr} hosts {A.abbr}{matchCity ? ` · ${matchCity}` : ""}</span>
           </div>
           <div className="note" style={{ marginTop: 10, marginBottom: 0 }}>
-            Ratings pulled from the model's built-in strength table; market odds auto-fill from ESPN's live sportsbook feed when published for this game.
+            Ratings start from the model's built-in strength table and self-adjust after every graded result (see the tracker above). Home-field edge is pulled from each team's real ESPN home vs. road win split, not a flat number for every team. Market odds auto-fill from ESPN's live sportsbook feed when published for this game.
             {mktAuto ? "" : " No market odds published for this matchup yet."}
           </div>
         </div>
@@ -630,20 +729,30 @@ export default function MLBModel() {
             </div>
             <div className="subtabs">
               {["upcoming", "standings"].map((v) => (
-                <button key={v} className={ttab === v ? "on" : ""} onClick={() => setTtab(v)}>{v === "upcoming" ? "Today's slate" : "Standings"}</button>
+                <button key={v} className={ttab === v ? "on" : ""} onClick={() => setTtab(v)}>{v === "upcoming" ? "Schedule" : "Standings"}</button>
               ))}
             </div>
 
             {ttab === "upcoming" && (<>
               <div className="note" style={{ marginTop: 4, marginBottom: 12 }}>Tap any game to load it into the model.</div>
-              {schedule.length === 0 && <div className="empty">No games loaded yet — deploy the backend for live data.</div>}
-              {schedule.map((fx, k) => (
-                <div className="fxrow" key={k} onClick={() => loadFixture(fx)}>
-                  <div className="when">{fx.day}<br />{fx.time}</div>
-                  <div className="match">{byName(fx.a).abbr} v {byName(fx.b).abbr}<div className="go">tap to model →</div></div>
-                  <div className="place">{fx.city}</div>
+              {scheduleDays.length === 0 && <div className="empty">No games loaded yet — deploy the backend for live data.</div>}
+              {scheduleDays.slice(0, daysShown).map((day, di) => (
+                <div className="daygroup" key={di}>
+                  <div className="dayhead">{day.label}</div>
+                  {day.games.map((fx, k) => (
+                    <div className="fxrow" key={k} onClick={() => loadFixture(fx)}>
+                      <div className="when">{fx.time}</div>
+                      <div className="match">{byName(fx.a).abbr} v {byName(fx.b).abbr}<div className="go">tap to model →</div></div>
+                      <div className="place">{fx.city}</div>
+                    </div>
+                  ))}
                 </div>
               ))}
+              {daysShown < scheduleDays.length && (
+                <button className="showmore" onClick={() => setDaysShown((d) => d + 2)}>
+                  ↓ Show 2 more days ({scheduleDays.length - daysShown} more day{scheduleDays.length - daysShown === 1 ? "" : "s"} available)
+                </button>
+              )}
               {snap.winner && snap.winner.length > 0 && (<>
                 <h5 style={{ marginTop: 16, fontFamily: "'Space Mono'", fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--dim)" }}>World Series futures</h5>
                 {snap.winner.map((w, k) => (<div className="standrow" key={k}><span>{w[0]}</span><span className="mono">Poly <b>{w[1]}%</b> · Kalshi <b>{w[2]}%</b></span></div>))}
@@ -653,15 +762,16 @@ export default function MLBModel() {
             {ttab === "standings" && (
               <div>
                 {standings.length === 0 && <div className="empty">Standings load once the backend is deployed.</div>}
-                {standings.map((lg, li) => (
-                  <div key={li} style={{ marginBottom: 14 }}>
-                    <h5 style={{ fontFamily: "'Space Mono'", fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--dim)", marginBottom: 6 }}>{lg.league}</h5>
-                    {lg.divisions.map((d, di) => (
-                      <div key={di} style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>{d.name}</div>
-                        {d.teams.map((t, ti) => (
-                          <div className="standrow" key={ti}><span>{t.team}</span><b>{t.wins}-{t.losses} · {t.gb}</b></div>
-                        ))}
+                {standings.map((div, di) => (
+                  <div key={di} style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>{div.name}</div>
+                    {div.teams.map((t, ti) => (
+                      <div className="standrow" key={ti}>
+                        <span>{t.team}</span>
+                        <span style={{ textAlign: "right" }}>
+                          <b>{t.wins}-{t.losses} · {t.gb === "-" ? "GB —" : `GB ${t.gb}`}</b>
+                          <div className="standmeta">{t.streak}{t.homeRecord ? ` · home ${t.homeRecord}` : ""}{t.roadRecord ? ` · road ${t.roadRecord}` : ""}</div>
+                        </span>
                       </div>
                     ))}
                   </div>

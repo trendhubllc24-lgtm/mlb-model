@@ -15,11 +15,13 @@ export async function GET(req) {
 
   try {
     const slate = await getEspnSlate();
-    const track = await updateTrackRecord(redis, slate);
+    const existing = (await redis.get("mlb-snapshot")) || {};
+    // Reuse whatever home-field map the last full refresh computed, rather
+    // than re-pulling standings every couple minutes just for this.
+    const track = await updateTrackRecord(redis, slate, existing.homeAdv);
     const live = extractLiveGames(slate);
 
-    const existing = (await redis.get("mlb-snapshot")) || {};
-    const snapshot = { ...existing, track, live, trackUpdatedAt: new Date().toISOString() };
+    const snapshot = { ...existing, track, live, ratings: track.ratings, trackUpdatedAt: new Date().toISOString() };
     await redis.set("mlb-snapshot", snapshot);
 
     return Response.json({ ok: true, trackTotal: track.total, updatedAt: snapshot.trackUpdatedAt });
