@@ -35,7 +35,6 @@ export async function GET(req) {
 
     const ctx = await buildFeatureContext(redis, predictions);
     const pitcherCoverage = entries.filter(([gid]) => ctx.pitcherStarts[gid] && !ctx.pitcherStarts[gid].unavailable).length;
-    const weatherCoverage = Object.keys(ctx.weatherMaps).length; // parks with weather data loaded (of 30)
 
     const X = entries.map(([gid, p]) => featuresFor(ctx, {
       gid, home: p.a, away: p.b, date: p.date,
@@ -53,7 +52,7 @@ export async function GET(req) {
     });
     await redis.set("mlb-predictions", predictions);
 
-    const backtest = { accuracy, correct, incorrect: total - correct, total, k: K, features: FEATURE_NAMES.length, pitcherCoverage, weatherCoverage, totalGames: entries.length, computedAt: new Date().toISOString() };
+    const backtest = { accuracy, correct, incorrect: total - correct, total, k: K, features: FEATURE_NAMES.length, pitcherCoverage, totalGames: entries.length, computedAt: new Date().toISOString() };
     await redis.set("mlb-forest-backtest", backtest);
     const existing = (await redis.get("mlb-snapshot")) || {};
     await redis.set("mlb-snapshot", { ...existing, forestBacktest: backtest });
