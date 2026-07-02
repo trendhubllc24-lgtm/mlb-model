@@ -71,12 +71,14 @@ export async function GET(req) {
     const h2h = {};
     h2hTargets.forEach((g, i) => { h2h[[g.home, g.away].sort().join("|")] = h2hResults[i]; });
 
+    const existingForForest = await redis.get("mlb-snapshot");
     const snapshot = {
       updatedAt: new Date().toISOString(),
       asOf: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" }),
       note: "Auto-updated from ESPN + Polymarket + Kalshi.",
       winner, scheduleDays, standings, homeAdv, h2h, live, track,
       ratings: track.ratings,
+      forestMeta: existingForForest?.forestMeta || null,
     };
     await redis.set("mlb-snapshot", snapshot);
     return Response.json({ ok: true, updatedAt: snapshot.updatedAt });

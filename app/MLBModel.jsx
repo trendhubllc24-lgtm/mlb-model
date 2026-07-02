@@ -163,9 +163,13 @@ export default function MLBModel() {
 
   // schedule pagination — start with 2 days, "show more" reveals 2 at a time
   const [daysShown, setDaysShown] = useState(2);
-  // prediction tracker: hit/miss filter + expandable detail row
+  // prediction tracker: hit/miss filter + expandable detail row + pagination
   const [trackTab, setTrackTab] = useState("all");
   const [openPick, setOpenPick] = useState(null);
+  const [trackShown, setTrackShown] = useState(10);
+
+  // Random Forest's independent read on the currently selected matchup
+  const [forestSignal, setForestSignal] = useState(null);
 
   const H = byName(teamH), A = byName(teamA);
   const pickH = (n) => setTH(n);
@@ -207,6 +211,15 @@ export default function MLBModel() {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, [liveGames.length]);
+
+  useEffect(() => {
+    let ok = true;
+    fetch(`/api/forest?home=${encodeURIComponent(teamH)}&away=${encodeURIComponent(teamA)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (ok) setForestSignal(d); })
+      .catch(() => { if (ok) setForestSignal(null); });
+    return () => { ok = false; };
+  }, [teamH, teamA, nonce]);
 
   const snap = live || SNAPSHOT;
   const liveRatings = live && live.ratings;
@@ -474,75 +487,13 @@ export default function MLBModel() {
           })}
         </div>
 
-        {/* ===== LIVE PREDICTION TRACKER — filterable, expandable ===== */}
-        <div className="card">
-          <h3 style={{ fontFamily: "'Space Mono'", fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: AMBER, marginBottom: 12 }}>Live prediction tracker</h3>
-          {(() => {
-            const trk = live && live.track;
-            if (!trk || trk.total === 0) {
-              return <div className="empty" style={{ fontSize: 13.5, lineHeight: 1.65 }}>No graded predictions yet. Every game the model forecasts gets logged automatically and graded once it's final — nobody enters anything by hand.</div>;
-            }
-            const acc = trk.accuracy;
-            const accColor = acc >= 0.6 ? MINT : acc >= 0.45 ? AMBER : CORAL;
-            const recentColor = trk.recentAccuracy >= 0.6 ? MINT : trk.recentAccuracy >= 0.45 ? AMBER : CORAL;
-            const hits = trk.history.filter((p) => p.correct).length;
-            const misses = trk.history.filter((p) => !p.correct).length;
-            const filtered = trk.history.filter((p) => trackTab === "all" ? true : trackTab === "hit" ? p.correct : !p.correct);
-
-            return (<>
-              <div style={{ display: "flex", gap: 26, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
-                <div><div className="bigp" style={{ color: MINT, fontSize: 34 }}>{trk.correct}</div><div className="note" style={{ margin: 0 }}>correct</div></div>
-                <div><div className="bigp" style={{ color: CORAL, fontSize: 34 }}>{trk.incorrect}</div><div className="note" style={{ margin: 0 }}>incorrect</div></div>
-                <div><div className="bigp" style={{ color: accColor, fontSize: 34 }}>{Math.round(acc * 100)}%</div><div className="note" style={{ margin: 0 }}>hit rate · {trk.total} graded</div></div>
-                {trk.recentTotal >= 5 && (
-                  <div><div className="bigp" style={{ color: recentColor, fontSize: 34 }}>{Math.round(trk.recentAccuracy * 100)}%</div><div className="note" style={{ margin: 0 }}>last {trk.recentTotal} · recent form</div></div>
-                )}
-              </div>
-              <div className="riskbar" style={{ marginTop: 4 }}><div className="rf2" style={{ width: `${acc * 100}%`, background: accColor, opacity: 0.85 }} /></div>
-              <div className="note" style={{ marginTop: 14, marginBottom: 4 }}>
-                "Correct" = the model's moneyline pick matched the final result. Every graded miss also nudges that team's rating for its next game — see "recent form" above vs. the all-time hit rate to gauge whether the model is adapting.
-              </div>
-
-              <div className="subtabs" style={{ marginTop: 10 }}>
-                {[["all", `All (${trk.history.length})`], ["hit", `Hits (${hits})`], ["miss", `Misses (${misses})`]].map(([v, label]) => (
-                  <button key={v} className={trackTab === v ? "on" : ""} onClick={() => { setTrackTab(v); setOpenPick(null); }}>{label}</button>
-                ))}
-              </div>
-              <div className="note" style={{ marginTop: 10, marginBottom: 10 }}>Tap a game to see the model's full pre-game read vs. what actually happened.</div>
-
-              {filtered.length === 0 && <div className="empty">Nothing in this filter yet.</div>}
-              {filtered.slice(0, 20).map((p, k) => {
-                const gid = `${p.a}|${p.b}|${p.date}`;
-                const isOpen = openPick === gid;
-                return (
-                  <div key={k}>
-                    <div
-                      className="fxrow pickrow"
-                      style={{ borderColor: p.correct ? MINT + "55" : CORAL + "55", borderRadius: isOpen ? "11px 11px 0 0" : "11px", marginBottom: isOpen ? 0 : 8 }}
-                      onClick={() => setOpenPick(isOpen ? null : gid)}
-                    >
-                      <div className="when" style={{ color: p.correct ? MINT : CORAL, fontWeight: 700 }}>{p.correct ? "✓ hit" : "✗ miss"}</div>
-                      <div className="match">{byName(p.a).abbr} v {byName(p.b).abbr}<div className="go" style={{ color: "var(--dim)" }}>final {p.finalScore} · picked {p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</div></div>
-                      <div className="place">{new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
-                    </div>
-                    {isOpen && (
-                      <div className="pickdetail">
-                        Pre-game read: <b>{byName(p.a).abbr} {p1(p.pA)}</b> to win · <b>{byName(p.b).abbr} {p1(p.pB)}</b> to win.<br />
-                        Picked <b>{p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</b> — actual winner was <b>{p.actual === "A" ? byName(p.a).abbr : byName(p.b).abbr}</b>, final score {p.finalScore}.<br />
-                        {p.correct ? "The model's favored side won this one." : "The model missed — both teams' ratings already shifted from this result, so this exact matchup would be read a little differently today."}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </>);
-          })()}
-        </div>
+        {/* Live Prediction Tracker moved to the sidebar, under Schedule/Standings — see <aside> below */}
 
         <div className="card">
           <div className="setup">
             <div className="fld"><label style={{ color: MINT }}>Home</label>
               <select value={teamH} onChange={(e) => pickH(e.target.value)}>{TEAMS.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}</select></div>
+
             <div className="vs">vs</div>
             <div className="fld"><label style={{ color: CORAL }}>Away</label>
               <select value={teamA} onChange={(e) => pickA(e.target.value)}>{TEAMS.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}</select></div>
@@ -686,6 +637,20 @@ export default function MLBModel() {
               The book prices this at <b>{Math.round(bImp * 100)}%</b>. The model says <b>{p1(R.p)}</b>.{" "}
               {bEdge >= 0 ? `Positive edge — the model thinks it hits more often than the price implies.` : `Negative edge — the price is longer than the model's read, so it grades −EV.`}
             </div>)}
+            {(bet === "mlH" || bet === "mlA") && (
+              forestSignal?.available ? (() => {
+                const fProbHome = forestSignal.homeWinProb;
+                const fProbThisSide = bet === "mlH" ? fProbHome : 1 - fProbHome;
+                const agree = (fProbThisSide >= 0.5) === (R.p >= 0.5);
+                return (
+                  <div className="evbox" style={{ borderColor: agree ? MINT + "40" : CORAL + "40" }}>
+                    <b>Random Forest</b> (trained on {forestSignal.trainedOn} historical games, {Math.round(forestSignal.trainAccuracy * 100)}% self-check accuracy) reads this side at <b>{p1(fProbThisSide)}</b> to win — {agree ? "agrees with the Poisson model's lean above." : "disagrees with the Poisson model's lean above, worth weighing both."}
+                  </div>
+                );
+              })() : (
+                <div className="note">Random Forest: {forestSignal ? `needs more graded games first (${forestSignal.trainedOn}/60 so far) — run the backfill to speed this up.` : "loading…"}</div>
+              )
+            )}
           </div>
         )}
 
@@ -739,7 +704,7 @@ export default function MLBModel() {
               {scheduleDays.slice(0, daysShown).map((day, di) => (
                 <div className="daygroup" key={di}>
                   <div className="dayhead">{day.label}</div>
-                  {day.games.map((fx, k) => (
+                  {(day.games || []).map((fx, k) => (
                     <div className="fxrow" key={k} onClick={() => loadFixture(fx)}>
                       <div className="when">{fx.time}</div>
                       <div className="match">{byName(fx.a).abbr} v {byName(fx.b).abbr}<div className="go">tap to model →</div></div>
@@ -762,14 +727,14 @@ export default function MLBModel() {
             {ttab === "standings" && (
               <div>
                 {standings.length === 0 && <div className="empty">Standings load once the backend is deployed.</div>}
-                {standings.map((div, di) => (
+                {standings.map((grp, di) => (
                   <div key={di} style={{ marginBottom: 14 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>{div.name}</div>
-                    {div.teams.map((t, ti) => (
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>{grp?.name}</div>
+                    {(grp?.teams || []).map((t, ti) => (
                       <div className="standrow" key={ti}>
                         <span>{t.team}</span>
                         <span style={{ textAlign: "right" }}>
-                          <b>{t.wins}-{t.losses} · {t.gb === "-" ? "GB —" : `GB ${t.gb}`}</b>
+                          <b>{t.wins}-{t.losses} · {t.gb === "-" || t.gb == null ? "GB —" : `GB ${t.gb}`}</b>
                           <div className="standmeta">{t.streak}{t.homeRecord ? ` · home ${t.homeRecord}` : ""}{t.roadRecord ? ` · road ${t.roadRecord}` : ""}</div>
                         </span>
                       </div>
@@ -778,6 +743,81 @@ export default function MLBModel() {
                 ))}
               </div>
             )}
+          </div>
+
+          {/* ===== LIVE PREDICTION TRACKER — moved here under Schedule/Standings, ===== */}
+          {/* paginated since a full backfilled season is a LOT of games.            */}
+          <div className="card">
+            <h3 style={{ fontFamily: "'Space Mono'", fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: AMBER, marginBottom: 12 }}>Live prediction tracker</h3>
+            {(() => {
+              const trk = live && live.track;
+              if (!trk || trk.total === 0) {
+                return <div className="empty" style={{ fontSize: 13.5, lineHeight: 1.65 }}>No graded predictions yet. Every game the model forecasts gets logged automatically and graded once it's final — nobody enters anything by hand.</div>;
+              }
+              const acc = trk.accuracy;
+              const accColor = acc >= 0.6 ? MINT : acc >= 0.45 ? AMBER : CORAL;
+              const recentColor = trk.recentAccuracy >= 0.6 ? MINT : trk.recentAccuracy >= 0.45 ? AMBER : CORAL;
+              const hits = trk.history.filter((p) => p.correct).length;
+              const misses = trk.history.filter((p) => !p.correct).length;
+              const filtered = trk.history.filter((p) => trackTab === "all" ? true : trackTab === "hit" ? p.correct : !p.correct);
+              const fm = snap.forestMeta;
+
+              return (<>
+                <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+                  <div><div className="bigp" style={{ color: MINT, fontSize: 28 }}>{trk.correct}</div><div className="note" style={{ margin: 0 }}>correct</div></div>
+                  <div><div className="bigp" style={{ color: CORAL, fontSize: 28 }}>{trk.incorrect}</div><div className="note" style={{ margin: 0 }}>incorrect</div></div>
+                  <div><div className="bigp" style={{ color: accColor, fontSize: 28 }}>{Math.round(acc * 100)}%</div><div className="note" style={{ margin: 0 }}>hit rate · {trk.total} graded</div></div>
+                </div>
+                {trk.recentTotal >= 5 && (
+                  <div className="note" style={{ margin: "4px 0 0" }}>Recent form (last {trk.recentTotal}): <b style={{ color: recentColor }}>{Math.round(trk.recentAccuracy * 100)}%</b></div>
+                )}
+                <div className="riskbar" style={{ marginTop: 10 }}><div className="rf2" style={{ width: `${acc * 100}%`, background: accColor, opacity: 0.85 }} /></div>
+
+                <div className="note" style={{ marginTop: 12, marginBottom: 4 }}>
+                  {fm?.ready
+                    ? `Random Forest active — trained on ${fm.trainedOn} historical games, ${Math.round(fm.trainAccuracy * 100)}% self-check accuracy.`
+                    : `Random Forest: ${fm ? `${fm.trainedOn}/60 games graded so far, needs more before it activates.` : "not trained yet."}`}
+                </div>
+
+                <div className="subtabs" style={{ marginTop: 10 }}>
+                  {[["all", `All (${trk.history.length})`], ["hit", `Hits (${hits})`], ["miss", `Misses (${misses})`]].map(([v, label]) => (
+                    <button key={v} className={trackTab === v ? "on" : ""} onClick={() => { setTrackTab(v); setOpenPick(null); setTrackShown(10); }}>{label}</button>
+                  ))}
+                </div>
+                <div className="note" style={{ marginTop: 10, marginBottom: 10 }}>Tap a game to see the model's full pre-game read vs. what actually happened.</div>
+
+                {filtered.length === 0 && <div className="empty">Nothing in this filter yet.</div>}
+                {filtered.slice(0, trackShown).map((p, k) => {
+                  const gid = `${p.a}|${p.b}|${p.date}`;
+                  const isOpen = openPick === gid;
+                  return (
+                    <div key={k}>
+                      <div
+                        className="fxrow pickrow"
+                        style={{ borderColor: p.correct ? MINT + "55" : CORAL + "55", borderRadius: isOpen ? "11px 11px 0 0" : "11px", marginBottom: isOpen ? 0 : 8 }}
+                        onClick={() => setOpenPick(isOpen ? null : gid)}
+                      >
+                        <div className="when" style={{ color: p.correct ? MINT : CORAL, fontWeight: 700 }}>{p.correct ? "✓ hit" : "✗ miss"}</div>
+                        <div className="match">{byName(p.a).abbr} v {byName(p.b).abbr}<div className="go" style={{ color: "var(--dim)" }}>final {p.finalScore} · picked {p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</div></div>
+                        <div className="place">{new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
+                      </div>
+                      {isOpen && (
+                        <div className="pickdetail">
+                          Pre-game read: <b>{byName(p.a).abbr} {p1(p.pA)}</b> to win · <b>{byName(p.b).abbr} {p1(p.pB)}</b> to win.<br />
+                          Picked <b>{p.pick === "A" ? byName(p.a).abbr : byName(p.b).abbr}</b> — actual winner was <b>{p.actual === "A" ? byName(p.a).abbr : byName(p.b).abbr}</b>, final score {p.finalScore}.<br />
+                          {p.correct ? "The model's favored side won this one." : "The model missed — both teams' ratings already shifted from this result, so this exact matchup would be read a little differently today."}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {trackShown < filtered.length && (
+                  <button className="showmore" onClick={() => setTrackShown((n) => n + 10)}>
+                    ↓ Show 10 more ({filtered.length - trackShown} more in this filter)
+                  </button>
+                )}
+              </>);
+            })()}
           </div>
         </aside>
         </div>
