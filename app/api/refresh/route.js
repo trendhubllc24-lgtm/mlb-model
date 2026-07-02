@@ -1,8 +1,9 @@
 import { Redis } from "@upstash/redis";
 import {
   getEspnSlate, getEspnH2H, extractLiveGames, getStandings, getPolymarket,
-  getKalshi, updateTrackRecord, buildHomeAdvMap, dayKeyOf,
+  getKalshi, getInjuries, updateTrackRecord, buildHomeAdvMap, dayKeyOf,
 } from "@/lib/sources";
+import { refreshForecasts } from "@/lib/weather";
 
 export const dynamic = "force-dynamic";
 
@@ -17,17 +18,24 @@ export async function GET(req) {
   }
 
   try {
-    const [slate, winnerPoly, winnerKalshi, standings] = await Promise.all([
+    const [slate, winnerPoly, winnerKalshi, standings, injuries] = await Promise.all([
       getEspnSlate(),
       getPolymarket("world-series-winner"),      // confirm slug on polymarket.com
       getKalshi("KXMLBWS"),                       // confirm ticker on kalshi.com
       getStandings(),
+      getInjuries(),                              // current injuries — display/context only, not a training feature
     ]);
 
     // Real, ESPN-sourced home-field edge per team (home W% minus road W%),
     // used both for the track-record's Elo update below and shipped in the
     // snapshot so the frontend's client-side model uses it too.
     const homeAdv = buildHomeAdvMap(standings);
+
+    // Freshen the weather FORECAST for every park hosting a game this week,
+    // BEFORE predictions are made below — so upcoming games are predicted
+    // with the same weather feature they'll later be trained with. Failures
+    // inside are swallowed per-park; this can never take refresh down.
+    await refreshForecasts(redis, slate.filter((g) => g.state === "pre").map((g) => g.home));
 
     const live = extractLiveGames(slate);
     const track = await updateTrackRecord(redis, slate, homeAdv);
@@ -76,7 +84,7 @@ export async function GET(req) {
       updatedAt: new Date().toISOString(),
       asOf: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" }),
       note: "Auto-updated from ESPN + Polymarket + Kalshi.",
-      winner, scheduleDays, standings, homeAdv, h2h, live, track,
+      winner, scheduleDays, standings, homeAdv, h2h, live, track, injuries,
       ratings: track.ratings,
       forestMeta: existingForForest?.forestMeta || null,
     };

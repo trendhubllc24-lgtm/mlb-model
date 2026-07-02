@@ -1,7 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { trainGBoost, MIN_TRAINING_ROWS } from "@/lib/gboost";
-import { buildTeamGameLogs, recentForm } from "@/lib/form";
-import { buildPitcherLogs, pitcherEraAsOf } from "@/lib/pitcherForm";
+import { buildFeatureContext, featuresFor, FEATURE_NAMES } from "@/lib/features";
 
 export const dynamic = "force-dynamic";
 
@@ -9,12 +8,14 @@ const redis = Redis.fromEnv();
 
 // Trains the Gradient Boosted Trees model on whatever's currently in
 // mlb-predictions (backfilled history + live-tracked games) and stores it.
-// 4 features: ratingDiff, homeAdvUsed, formDiff (recent scoring form), and
-// pitcherDiff (starting pitcher rolling ERA gap) — all computed fresh from
+// The feature vector (see lib/features.js FEATURE_NAMES) now covers team
+// strength, home edge, scoring form, starter ERA + K-rate, rest days,
+// bullpen ERA, park factor, and game-day weather — all computed fresh from
 // history using only information available before the game being
 // predicted, so there's no leakage of future results into training.
-// pitcherDiff falls back to 0 (neutral) for any game that hasn't had its
-// starters backfilled yet via /api/backfill-pitchers.
+// Any input that hasn't been backfilled yet (pitchers via
+// /api/backfill-pitchers, weather via /api/backfill-weather) degrades to a
+// neutral value for that game rather than breaking training.
 // Call this after backfilling, and occasionally afterward (e.g. once a
 // day) as more games get graded, so it keeps learning too.
 export async function GET(req) {
@@ -29,24 +30,17 @@ export async function GET(req) {
 
     let meta;
     if (rows.length < MIN_TRAINING_ROWS) {
-      meta = { trainedOn: rows.length, trainAccuracy: null, ready: false, features: 4, trainedAt: new Date().toISOString() };
+      meta = { trainedOn: rows.length, trainAccuracy: null, ready: false, features: FEATURE_NAMES.length, trainedAt: new Date().toISOString() };
     } else {
-      const teamLogs = buildTeamGameLogs(predictions);
-      const pitcherStarts = (await redis.get("mlb-pitcher-starts")) || {};
-      const pitcherLogs = buildPitcherLogs(pitcherStarts);
-
-      const X = rows.map(([gid, p]) => {
-        const formDiff = recentForm(teamLogs[p.a], p.date) - recentForm(teamLogs[p.b], p.date);
-        const starters = pitcherStarts[gid];
-        const pitcherDiff = (starters && !starters.unavailable)
-          ? pitcherEraAsOf(pitcherLogs, starters.away.name, p.date) - pitcherEraAsOf(pitcherLogs, starters.home.name, p.date)
-          : 0;
-        return [p.ratingDiff, p.homeAdvUsed, formDiff, pitcherDiff];
-      });
+      const ctx = await buildFeatureContext(redis, predictions);
+      const X = rows.map(([gid, p]) => featuresFor(ctx, {
+        gid, home: p.a, away: p.b, date: p.date,
+        ratingDiff: p.ratingDiff, homeAdvUsed: p.homeAdvUsed,
+      }));
       const y = rows.map(([, p]) => (p.actual === "A" ? 1 : 0)); // 1 = home team won
       const { model, trainAccuracy } = trainGBoost(X, y);
       await redis.set("mlb-forest-model", model);
-      meta = { trainedOn: rows.length, trainAccuracy, ready: true, features: 4, trainedAt: new Date().toISOString() };
+      meta = { trainedOn: rows.length, trainAccuracy, ready: true, features: FEATURE_NAMES.length, featureNames: FEATURE_NAMES, trainedAt: new Date().toISOString() };
     }
 
     await redis.set("mlb-forest-meta", meta);

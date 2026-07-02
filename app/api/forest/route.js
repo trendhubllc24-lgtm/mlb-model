@@ -1,16 +1,19 @@
 import { Redis } from "@upstash/redis";
 import { predictGBoost } from "@/lib/gboost";
-import { formDiffFor } from "@/lib/form";
+import { buildFeatureContext, featuresFor, FEATURE_NAMES } from "@/lib/features";
 
 export const dynamic = "force-dynamic";
 
 const redis = Redis.fromEnv();
 
 // Public, read-only: given a home/away team, returns the Gradient Boosted
-// Trees model's independent win-probability read for that matchup, using
-// the same 3 features it was trained on: ratingDiff, homeAdv, and each
-// team's recent scoring form (as of right now). No secret needed — this
-// never writes anything.
+// Trees model's independent win-probability read for that matchup, as of
+// right now, using the SAME shared feature builder training uses (this
+// route previously hand-built a 3-feature vector while the model had
+// grown to 4 — exactly the drift lib/features.js exists to prevent).
+// Optional query params homeStarter/awayStarter (ESPN display names, e.g.
+// "Gerrit Cole") sharpen the pitching features; without them those
+// features sit at their neutral league-average values.
 export async function GET(req) {
   try {
     const url = new URL(req.url);
@@ -31,15 +34,21 @@ export async function GET(req) {
 
     const ratings = snapshot?.ratings || {};
     const homeAdv = snapshot?.homeAdv || {};
-    const rH = ratings[home] ?? 1500, rA = ratings[away] ?? 1500;
-    const ratingDiff = rH - rA;
-    const homeAdvUsed = homeAdv[home] ?? 25;
-    const formDiff = formDiffFor(predictions || {}, home, away, new Date().toISOString());
+    const ctx = await buildFeatureContext(redis, predictions || {});
+    const features = featuresFor(ctx, {
+      gid: null, home, away, date: new Date().toISOString(),
+      ratingDiff: (ratings[home] ?? 1500) - (ratings[away] ?? 1500),
+      homeAdvUsed: homeAdv[home] ?? 25,
+      probableHome: url.searchParams.get("homeStarter") || undefined,
+      probableAway: url.searchParams.get("awayStarter") || undefined,
+    });
 
-    const prob = predictGBoost(model, [ratingDiff, homeAdvUsed, formDiff]);
+    const prob = predictGBoost(model, features);
     return Response.json({
       ok: true, available: prob != null,
-      homeWinProb: prob, trainedOn: meta.trainedOn, trainAccuracy: meta.trainAccuracy,
+      homeWinProb: prob,
+      features: Object.fromEntries(FEATURE_NAMES.map((n, i) => [n, features[i]])),
+      trainedOn: meta.trainedOn, trainAccuracy: meta.trainAccuracy,
     });
   } catch (err) {
     return Response.json({ ok: false, error: String(err) }, { status: 200 });
