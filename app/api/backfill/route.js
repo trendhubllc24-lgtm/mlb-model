@@ -4,7 +4,7 @@ import { getDaySlate, updateTrackRecord } from "@/lib/sources";
 export const dynamic = "force-dynamic";
 
 const redis = Redis.fromEnv();
-const BATCH_DAYS = 10; // how many calendar days to process per call — keeps each request well inside serverless time limits
+const DEFAULT_BATCH_DAYS = 10; // how many calendar days to process per call by default
 
 function fmtDate(d) { return d.toISOString().slice(0, 10).replace(/-/g, ""); }
 function addDays(yyyymmdd, n) {
@@ -44,6 +44,7 @@ export async function GET(req) {
 
   const url = new URL(req.url);
   const year = url.searchParams.get("year") || "2025";
+  const batchDays = Math.max(1, Math.min(15, parseInt(url.searchParams.get("days"), 10) || DEFAULT_BATCH_DAYS));
   const reset = url.searchParams.get("reset") === "1";
   const seasonStart = SEASON_START[year] || `${year}0301`;
   const seasonEnd = SEASON_END[year] || `${year}1130`;
@@ -53,7 +54,7 @@ export async function GET(req) {
   let cursor = reset ? seasonStart : ((await redis.get(cursorKey)) || seasonStart);
 
   const days = [];
-  for (let i = 0; i < BATCH_DAYS; i++) {
+  for (let i = 0; i < batchDays; i++) {
     const d = addDays(cursor, i);
     if (d > seasonEnd || d > today) break;
     days.push(d);
