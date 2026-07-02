@@ -51,20 +51,25 @@ export async function GET(req) {
   const today = fmtDate(new Date());
 
   const cursorKey = `mlb-backfill-cursor-${year}`;
-  let cursor = reset ? seasonStart : ((await redis.get(cursorKey)) || seasonStart);
-
-  const days = [];
-  for (let i = 0; i < batchDays; i++) {
-    const d = addDays(cursor, i);
-    if (d > seasonEnd || d > today) break;
-    days.push(d);
-  }
-
-  if (days.length === 0) {
-    return Response.json({ ok: true, done: true, year, message: `Backfill for ${year} is already complete.` });
-  }
+  // Upstash's client auto-detects values that look like JSON and converts
+  // them back on read — a saved string like "20200802" silently comes back
+  // as the NUMBER 20200802, which has no .slice(). That's exactly what was
+  // crashing every call after the first one for a given year. Force it back
+  // to a string explicitly.
+  let cursor = String(reset ? seasonStart : ((await redis.get(cursorKey)) || seasonStart));
 
   try {
+    const days = [];
+    for (let i = 0; i < batchDays; i++) {
+      const d = addDays(cursor, i);
+      if (d > seasonEnd || d > today) break;
+      days.push(d);
+    }
+
+    if (days.length === 0) {
+      return Response.json({ ok: true, done: true, year, message: `Backfill for ${year} is already complete.` });
+    }
+
     const dayResults = await Promise.all(days.map(getDaySlate));
     // Only real, finished, regular-season games count for training.
     const games = dayResults.flat().filter((g) => g.state === "post" && g.seasonType === 2);
